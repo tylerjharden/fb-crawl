@@ -1,0 +1,125 @@
+fb-crawl.pl is a script that crawls/scrapes Facebook friends and adds their information to a database.
+It can be used for social graph analysis and refined Facebook searching.
+
+FEATURES
+
+    - Multithreaded
+    - Aggregates information from multiple accounts
+
+REQUIREMENTS
+
+    - Perl 5 or greater
+    - MySQL
+
+INSTALLATION
+
+    $ cd fb-crawl
+    $ chmod +x fb-crawl.pl
+    $ ./fb-crawl.pl
+    
+    fb-crawl.pl will set up all the required database tables.
+    All you have to do is provide it with the MySQL connection information and Facebook account.
+    
+    $ ./fb-crawl.pl -u email@address.com -host mysql.host -user fb-crawl -pass mysqlPassword
+
+OPTIONS
+    
+    -u         Facebook email address.
+    -p         Facebook password.
+    -host      MySQL server IP address or host name (default: localhost);
+    -port      MySQL port (default: 3306)
+    -user      MySQL user (default: root)
+    -pass      MySQL password.
+    -db        MySQL database (default: facebook)
+    -tables    MySQL table names for info, wall, and friends in that order. Formatted in a colon separated list. (default: info:wall:friends)
+    -info      User info save method (default: append)
+                append:  This appends new comma separated information to the row and keeps the old information.
+                         Useful when you want to save all user changes and don't care about when it was updated.
+                insert:  This inserts new user information in a new row (degrages searchability).
+                         Useful when you want to save all user changes and when that info was updated.
+                replace: This replaces all the current user information in the database with the new information.
+                         Useful when you only care about the most recent user information.
+    -i         Crawl user's information and add to info table.
+    -w         Crawl user's wall posts and add to wall table.
+    -f         Crawl user's friends and add to friends table.
+    -self      Crawl your profile too.
+    -t         Threads (default: 16)
+    -https     Use SSL encryption.
+    -proxy     Use an HTTP proxy. host[:port]
+    -timeout   Timeout in seconds (default: 30)
+    -depth     Crawl depth (default: 0)
+                0 - only your friends
+                1 - friends of friends
+                2 - friends of friends of friends
+                3 - friendception
+    -url       Crawl these url(s) and also crawl the user's friends if -depth > 1
+                example: -url http://fb.com/profile.php?id=12345,profile.php?id=54321,john.smith.3
+    -name      Search for and crawl these name(s) and also crawl the user's friends if -depth > 1.
+               This works by using Facebook's search by and using the first result. For more precision use -url.
+                example: -name "John Smith, Jane Smith"
+    -new       Only crawl users that aren't in the database.
+    -old       Only crawl users that are in the database.
+    -plugins   Plug-ins to include.
+                example: birthday2date.pl,location2LatLon.pl
+    -h         Help
+
+EXAMPLES
+
+    Crawl your friends' Facebook information, wall, and friends:
+    $ ./fb-crawl.pl -u email@address.com -i -w -f
+
+    Crawl John Smith's Facebook information, wall, and friends:
+    $ ./fb-crawl.pl -u email@address.com -i -w -f -name 'John Smith'
+
+    Crawl Facebook information for friends of friends:
+    $ ./fb-crawl.pl -u email@address.com -depth 1 -i
+    
+    Crawl Facebook information of John Smith's friends of friends:
+    $ ./fb-crawl.pl -u email@address.com -depth 1 -i -name 'John Smith'
+    
+    Extreme: Crawl friends of friends of friends of friends with 200 threads:
+    $ ./fb-crawl.pl -u email@address -depth 4 -t 200 -i -w -f
+    
+    
+MYSQL EXAMPLES
+    
+    Find local singles:
+    SELECT `user_name`, `profile` FROM `info` WHERE `current_city` = 'My Current City, State' AND `sex` = 'Female' AND `relationship` = 'Single'
+    
+    Find some Harvard singles:
+    SELECT `user_name`, `profile` FROM `info` WHERE `college` = 'Harvard University' AND `sex` = 'Female' AND `relationship` = 'Single'
+    
+    How many Facebook employees have you crawled? 
+    SELECT count(*) FROM `info` WHERE `company` = 'Facebook'
+    
+    Find John Smith's friends:
+    SELECT `friends` FROM `friends` WHERE `name` = 'John Smith'
+    
+    
+PLUG-INS
+    
+    fb-crawl.pl will open a perl script that can analyze and modify user information before it goes into the database.
+    The script should contain a function with the same name as the file.
+    The function is passed a hash reference with the current user's information in it.
+    
+    To load a plug-in use the -plugins option:
+    $ ./fb-crawl.pl -u email@address -i -plugins location2latlon.pl,birthday2date.pl
+    
+    location2latlon.pl:
+    This plug-in adds the user's coordinates to the database using the Google Geocoding API.
+    
+    birthday2date.pl:
+    This plug-in convert the user's birthday to MySQL date (YYYY-MM-DD) format.
+    
+    See plugin files for implementation details.
+    
+FAQ
+
+    It's logging in but won't load my friends?
+    You probably have SSL enabled on your account. You need to use the -https option.
+    
+    Can't locate object method "ssl_opts" via package "LWP::UserAgent"
+    You need to install LWP::Protocol::https.
+    
+    $ sudo perl -MCPAN -e 'install LWP::Protocol::https'
+    
