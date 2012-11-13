@@ -76,12 +76,20 @@ sub usage {
     exit();
 }
 
+sub die_report {
+	die($_[0]."! Please report errors to https://code.google.com/p/fb-crawl/issues/\n");
+}
+
+
+#
+# Initiate the MySQL database
+#
 use DBI;
 print "+ Connecting to $mysql_user\@$mysql_host on port $mysql_port\n";
-my $dbh = DBI->connect("DBI:mysql:database=information_schema;host=$mysql_host;port=$mysql_port", $mysql_user, $mysql_pass) or die($@);
+my $dbh = DBI->connect("DBI:mysql:database=information_schema;host=$mysql_host;port=$mysql_port", $mysql_user, $mysql_pass) or die_report($@);
 my $query;
 $dbh->{'mysql_enable_utf8'} = 1;
-$query = $dbh->prepare("CREATE DATABASE IF NOT EXISTS `$mysql_database` CHARACTER SET utf8 COLLATE utf8_general_ci")->execute or die($@);
+$query = $dbh->prepare("CREATE DATABASE IF NOT EXISTS `$mysql_database` CHARACTER SET utf8 COLLATE utf8_general_ci")->execute or die_report($@);
 
 sub check_table_exists {
     foreach my $table_name ($_[0]) {
@@ -91,7 +99,7 @@ sub check_table_exists {
             print " + Creating table \"$table_name\"\n";
             my $extra_sql = '';
             if ($_[1] eq 'wall') {
-                $extra_sql = ', `post` TEXT NOT NULL, `post_search` TEXT NOT NULL'
+                $extra_sql = ', `post` TEXT NOT NULL, `post_search` TEXT NOT NULL, `location` VARCHAR(50) NULL';
             }
             if ($_[1] eq 'friends') {
                 $extra_sql = ', `friends` TEXT NOT NULL'
@@ -103,17 +111,19 @@ sub check_table_exists {
     }
 }
 
+# Create tables if they don't exist
 print "+ Checking Tables\n";
 my ($mysql_info_table, $mysql_wall_table, $mysql_friends_table) = split(/:/, $mysql_tables);
 check_table_exists($mysql_info_table, 'info') if (defined($save_info));
 check_table_exists($mysql_wall_table, 'wall') if (defined($save_wall));
 check_table_exists($mysql_friends_table, 'friends') if (defined($save_friends));
 
-use threads;
-use threads::shared;
+#
+# load all user information columns into @info_table_columns
+#
 my @info_table_columns :shared;
 $query = $dbh->prepare("SELECT `COLUMN_NAME` FROM `information_schema`.COLUMNS WHERE `TABLE_SCHEMA`='$mysql_database' AND `TABLE_NAME`='$mysql_info_table'");
-$query->execute or die($@);
+$query->execute or die_report($@);
 $query->bind_columns(\(my $column_name));
 while ($query->fetch()) {
     push(@info_table_columns, $column_name);
@@ -124,9 +134,6 @@ if (!defined($save_wall) and !defined($save_friends) and !defined($save_info)) {
     exit;
 }
 
-use threads;
-use threads::shared;
-use Thread::Queue;
 use Time::HiRes qw(usleep);
 use Fcntl;
 use HTML::Entities;
@@ -137,6 +144,9 @@ if (defined($https)) {
     use LWP::Protocol::https;
 }
 
+#
+# Load any -plugins
+#
 no strict "refs";
 my @plugin_functions;
 if (defined($plugins)) {
@@ -161,6 +171,7 @@ if (defined($plugins)) {
 	}
 }
 
+# trims whitespaces from ends of string
 sub trim($) {
 	my $string = shift;
 	$string =~ s/^\s+//;
@@ -168,8 +179,9 @@ sub trim($) {
 	return $string;
 }
 
-my ($fb_user_id, $response, $error, $istart, $iend);
-
+#
+# Initiate LWP::UserAgent
+#
 my $ua = LWP::UserAgent->new;
 $ua->cookie_jar({});
 $ua->agent('Mozilla/5.0 (Windows NT 5.1; rv:14.0) Gecko/20120405 Firefox/14.0a1');
@@ -180,6 +192,9 @@ if (defined($https)) {
 	$ua->ssl_opts(verify_hostnames => 0);
 }
 
+my $response;
+
+# Checks the -proxy and prints the apparent IP Address
 if (defined($proxy)) {
 	$ua->proxy(['http'], 'http://'.$proxy.'/');
 	$response = $ua->get('http://ip.appspot.com/');
@@ -190,8 +205,10 @@ if (defined($proxy)) {
 		exit;
 	}
 }
-push @{ $ua->requests_redirectable }, 'POST';
 
+#
+# Request Facebook password if -p not set
+#
 if (!defined($fb_user_pass)) {
 	print '? Facebook Password: ';
 	system('stty','-echo');
@@ -200,9 +217,13 @@ if (!defined($fb_user_pass)) {
 	print "\n";
 }
 
+#
+# Log in to Facebook
+#
 $response = $ua->get('http://www.facebook.com/')->decoded_content;
 if (index($response, '<input value="Log In"') > -1) {
 	print "+ Logging in...";
+	push @{ $ua->requests_redirectable }, 'POST';
 	$response = $ua->post('http'.(defined($https)?'s':'').'://www.facebook.com/login.php?login_attempt=1', { email => $fb_user_email, pass => $fb_user_pass });
 	$response = $response->decoded_content;
 	print "done\n";
@@ -210,11 +231,12 @@ if (index($response, '<input value="Log In"') > -1) {
 	print "+ Using previous session cookies\n";
 }
 
-if (index($response, '<div id="error"') > -1) {
-    $istart = index($response, '<div id="error"');
-    $istart = index($response, '>', $istart)+1;
-    $iend = index($response, '</div', $istart);
-    $error = substr($response, $istart, $iend-$istart);
+
+#
+# Check for any login issues
+#
+if (index($response, 'login_error_box') > -1) {
+    my $error = $1 if $response =~ /login_error_box[^>]+>(.*?)<\/div>/;
     $error =~ s|</h2>|: |g;
     $error =~ s|<.+?>| |g;
     $error =~ s/\s+/\ /g;
@@ -222,26 +244,38 @@ if (index($response, '<div id="error"') > -1) {
     print "! Error: $error\n";
     exit;
 }
-$istart = index($response, 'envFlush({"user":"')+18;
-$iend = index($response, '"', $istart);
-$fb_user_id = substr($response, $istart, $iend-$istart);
 
-$istart = index($response, '<span class="headerTinymanName"');
-if ($istart < 0) {
-	$istart = index($response, '<a class="fbxWelcomeBoxName"');
-}
+#
+# Parse User ID
+#
+my $fb_user_id = $1 if $response =~ /envFlush\(\{"user"\:"([0-9]+)"/;
+
+#
+# Parse User Name
+#
+my $istart = index($response, '<span class="headerTinymanName"');
+$istart = index($response, '<a class="fbxWelcomeBoxName"') if ($istart < 0);
 $istart = index($response, '>', $istart)+1;
-$iend = index($response, '</', $istart);
+my $iend = index($response, '</', $istart);
 my $fb_user_name = substr($response, $istart, $iend-$istart);
 
+
+#
+# Initiate Threads
+#
 my $start_time = time();
 my @scanned_uids;
 my @users;
 my @threads;
+use threads;
+use Thread::Queue;
 my $q = Thread::Queue->new();
-
 push(@threads, threads->create(\&crawl_user)) for (1..($thread_count-1));
 
+
+#
+# $ua->get with added functionality to detect Facebook errors
+#
 sub http_request {
     my $tries = 0;
     my $success = 0;
@@ -262,15 +296,12 @@ sub http_request {
 		$response = 'Sorry, something went wrong.';
 	}
 	if (index($response, '<div id="error"') > -1) {
-		$istart = index($response, '<div id="error"');
-		$istart = index($response, '>', $istart)+1;
-		$iend = index($response, '</div', $istart);
-		$error = substr($response, $istart, $iend-$istart);
+		my $error = $1 if $response =~ /<div id="error">(.*?)<\/div>/;
 		$error =~ s|</h2>|: |g;
 		$error =~ s|<.+?>| |g;
 		$error =~ s/\s+/\ /g;
 		$error = trim($error);
-		print "$error\n";
+		print $error."\n";
 		self_destruct();
 	}
 	if (index($response, 'Log In') > -1) {
@@ -285,21 +316,21 @@ sub http_request {
     }
 }
 
+#
+# Converts a string like 'Yesterday at 4:30pm' to MySQL DATETIME (YYYY-MM-DD HH:MM:SS) format.
+#
 sub strtodate {
     my $date = lc($_[0]);
     if ($date eq 'just now') {
         return strftime("%Y-%m-%d %H:%M:00", localtime(time));
     }
-    $date =~ m/([0-9]+) minutes? ago/;
-    if (defined($1)) {
+    if ($date =~ m/([0-9]+) minutes? ago/) {
         return strftime("%Y-%m-%d %H:%M:00", localtime(time-(($1*1)*60)));
     }
-    $date =~ m/([0-9]+) hours? ago/;
-    if (defined($1)) {
+    if ($date =~ m/([0-9]+) hours? ago/) {
         return strftime("%Y-%m-%d %H:%M:00", localtime(time-(($1*1)*3600)));
     }
-    $date =~ m/([0-9]+) days? ago/;
-    if (defined($1)) {
+    if ($date =~ m/([0-9]+) days? ago/) {
         return strftime("%Y-%m-%d %H:%M:00", localtime(time-(($1*1)*86400)));
     }
     my @months = ('january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december');
@@ -364,6 +395,10 @@ sub strtodate {
     return $year.'-'.$month.'-'.$day.' '.$time;
 }
 
+
+#
+# Gets all the user's friends and sends them to the crawl_user() thread
+#
 sub find_friends {
     my ($current_name, $html);
 	foreach my $scanned_uid (@scanned_uids) {
@@ -452,6 +487,10 @@ sub find_friends {
     usleep(100000) for (0..$#threads);
 }
 
+
+#
+# Gets a user's name and id from the given URI
+#
 sub get_user {
     my $url = 'http://m.facebook.com/'.$_[0];
     my $response = http_request($url);
@@ -473,140 +512,180 @@ sub get_user {
 	}
 }
 
-sub crawl_user() {
+#######################
+#                     #
+#  Crawl User Thread  #
+#                     #
+#######################
+sub crawl_user {
+	
     my ($query, $response);
-    my $dbh_thread = DBI->connect("DBI:mysql:database=information_schema;host=$mysql_host;port=$mysql_port", $mysql_user, $mysql_pass) or die('$@');
+    
+	# Initiate a MySQL instance for this thread
+	my $dbh_thread = DBI->connect("DBI:mysql:database=information_schema;host=$mysql_host;port=$mysql_port", $mysql_user, $mysql_pass) or die('$@');
     $dbh_thread->{'mysql_enable_utf8'} = 1;
-    while (my $str = $q->dequeue()) {
-        if ($str eq 'die') {
-            last;
-        }
-        my ($id, $name, $url) = split(/,/, $str);
+	
+    while (my $args = $q->dequeue()) {
         
+		# kill thread if sent a death signal
+		last if ($args eq 'die');
+		
+        my ($id, $name, $url) = split(/,/, $args);
+        
+		#
+		# This checks the amount of -mutual friends by requesting the user's Info page
+		#
 		my $info_response;
 		if ($mutual > 0) {
             $info_response = http_request($url.((index($url, '?') > -1) ? '&' : '?').'v=info');
 			if (index($info_response, 'Add Friend</a>') > -1) {
 				$info_response =~ /Mutual Friends \(([0-9]+)\)/;
-				if (!defined($1)) {
-					next;
-				}
-				if ($1*1 < $mutual) {
-					next;
-				}
+				next if (!defined($1));
+				next if ($1*1 < $mutual); # convert string to int and break if less than -mutual
 			}
 		}
 		
+		#########################
+		#                       #
+		#  GET USER WALL POSTS  #
+		#                       #
+		#########################
 		WALL:
         if (defined($save_wall)) {
+			
+			#
+			# Later we will need to check if we already have a post and break
+			# so we fill an array with the 5 latest posts from the user
+            #
             my @latest_posts;
             $query = $dbh_thread->prepare("SELECT `date`,`post` FROM `$mysql_database`.`$mysql_wall_table` WHERE `user_id`='$id' ORDER BY `date` DESC LIMIT 0, 5");
-            $query->execute or die($@);
+            $query->execute or die_report($@);
             $query->bind_columns(\(my $date), \(my $post));
-            while ($query->fetch()) {
+			while ($query->fetch()) {
                 push(@latest_posts, $date.$post);
-            } 
-			if (($query->rows > 0 and defined($new_only)) || ($query->rows == 0 and defined($old_only))) {
-				goto INFO;
-			}
-            my $inserted_posts = 0;
-            print ' - '.$name.(' ' x (27-length($name))).$id.(' ' x (20-length($id)))."wall posts : starting\n";
-            $response = http_request('http://m.facebook.com/wall.php?id='.$id);
-            PAGE: while (1) {
-                my ($msg, $date, $post, $post_search, $next_page, $istart, $iend, $last_post);
-                $last_post = '';
-                $istart = index($response, '<body');
-                $istart = index($response, 'class="story acw apl abt', $istart);
-                if ($istart < 0) {
-                    last;
-                }
-                while (1) {
-                    $istart = index($response, '<div class="msg"', $istart);
-                    if ($istart < 0) {
-                        last;
-                    }
-                    $istart = index($response, '>', $istart)+1;
-                    $iend = index($response, '</abbr', $istart);
-                    $msg = substr($response, $istart, $iend-$istart);
-                    if ($msg eq '') {
-                        next;
-                    }
-                    
-                    $istart = index($msg, '<abbr>')+6;
-                    $post = substr($msg, 0, $istart-6);
-                    $date = strtodate(substr($msg, $istart, length($msg)-$istart));
-                    $post = decode_entities($post);
-                    $post =~ s/<\/?br\ ?\/?>/ -> /;
-                    $post =~ s/<\/?br\ ?\/?>/ /g;
-                    $post =~ s|<.+?>||g;
+            }
+			
+			#
+			# If we've crawled the user before and we only want new users, skip to INFO crawl
+			# If we've never crawled the user before and we only want old users, skip to INFO crawl
+			#
+			goto INFO if (($query->rows > 0 and defined($new_only)) || ($query->rows == 0 and defined($old_only)));
+			
+			print ' - '.$name.(' ' x (27-length($name))).$id.(' ' x (20-length($id)))."wall posts : starting\n";
+			my $last_post = '';
+			my $inserted_posts = 0;
+			my $response = http_request('http://m.facebook.com/wall.php?id='.$id); # get first wall page
+			
+			PAGE: while(1) {
+				
+				#
+				# Parse each wall post
+				#
+				while ($response =~ m/<div[^>]*? class="msg[^>]+>(.*?)<\/div><div[^>]*? class="actions[^>]+>.*?<abbr>([^<]+)<\/abbr>( (near|in|at) ([^<]+))?/g) {
+					
+					# set variables from regex match
+					my $post = $1;
+					my $date = strtodate($2);
+					my $location = '';
+					$location = trim(decode_entities($5)) if (defined($5));
+					
+					# sanitize post
+					$post = decode_entities($post);
+					$post =~ s/<\/?br\ ?\/?>/ -> /;
+					$post =~ s/<\/?br\ ?\/?>/ /g;
+					$post =~ s|<.+?>||g;
 					$post =~ s/[\ ]{2,}/ /g;
-                    $post = trim($post);
-					$post_search = lc($post);
+					$post = trim($post);
+					
+					# split post into unique lowercase words for searching purposes
+					my $post_search = lc($post);
 					$post_search =~ s/[^a-z0-9\ ]+/ /g;
 					$post_search =~ s/[\ ]{2,}/ /g;
 					$post_search = join(' ', keys %{{ map { $_ => 1 } split(/ /, trim($post_search)) }});
-                    if ($post ne '' && $date.$post ne $last_post) {
-                        if (!grep {$_ eq $date.$post} @latest_posts) {
-                            $inserted_posts++;
-                            $query = $dbh_thread->prepare("INSERT INTO `$mysql_database`.`$mysql_wall_table` (`crawled_by`, `user_id`, `user_name`, `date`, `post`, `post_search`) VALUES (?,?,?,?,?,?)");
-                            $query->execute($fb_user_email, $id, $name, $date, $post, $post_search);
-                        }else{
-                            last PAGE;
-                        }
-                    }
-                    $last_post = $date.$post;
-                    $istart = $iend;
-                }
-                $istart = index($response, 'id="m_more_item');
-                if ($istart < 0) {
-                    last;
-                }
-                $istart = index($response, 'href="', $istart)+6;
-                $iend = index($response, '"', $istart);
-                $next_page = substr($response, $istart, $iend-$istart);
-                $response = http_request('http://m.facebook.com'.decode_entities($next_page));
-            }
-            print ' - '.$name.(' ' x (27-length($name))).$id.(' ' x (20-length($id)))."wall posts : $inserted_posts inserted\n";
-        }
+					
+					# make sure post isn't empty and that it's not the same as $last_post
+					if ($post ne '' && $date.$post_search ne $last_post) {
+						
+						# make sure we don't already have that post
+						if (!grep {$_ eq $date.$post} @latest_posts) {
+							$inserted_posts++;
+							$query = $dbh_thread->prepare("INSERT INTO `$mysql_database`.`$mysql_wall_table` (`crawled_by`, `user_id`, `user_name`, `date`, `location`, `post`, `post_search`) VALUES (?,?,?,?,?,?,?)");
+							$query->execute($fb_user_email, $id, $name, $date, $location, $post, $post_search);
+						}else{
+							# if we do already have that post, we will have any posts after that, so we break.
+							last PAGE;
+						}
+					}
+					$last_post = $date.$post_search;
+				}
+				
+				#
+				# Check for next page and request it
+				#
+				my $istart = index($response, 'id="m_more_item');
+				last if ($istart < 0); # break if no more pages
+				$istart = index($response, 'href="', $istart)+6; # get URL of next page
+				my $iend = index($response, '"', $istart);
+				$response = http_request('http://m.facebook.com'.decode_entities(substr($response, $istart, $iend-$istart))); # fetch next page
+			}
+			
+			#
+			# WALL POSTS finished. print results.
+			#
+			print ' - '.$name.(' ' x (27-length($name))).$id.(' ' x (20-length($id)))."wall posts : $inserted_posts inserted\n";
+		}
         
+		##########################
+		#                        #
+		#  GET USER INFORMATION  #
+		#                        #
+		##########################
 		INFO:
         if (defined($save_info)) {
+			
+			# Get current user information out of the database
             $query = $dbh_thread->prepare("SELECT * FROM `$mysql_database`.`$mysql_info_table` WHERE `user_id`='$id'");
-            $query->execute or die($@);
-			if (($query->rows > 0 and defined($new_only)) || ($query->rows == 0 and defined($old_only))) {
-				next;
-			}
+            $query->execute or die_report($@);
+			
+			#
+			# If we've crawled the user before and we only want new users, skip current user
+			# If we've never crawled the user before and we only want old users, skip current user
+			#
+			next if (($query->rows > 0 and defined($new_only)) || ($query->rows == 0 and defined($old_only)));
+			
 			my $row = $query->fetchrow_hashref;
-            my %current_user;
+            my %current_user; # contains current user info
+			
+			#
+			# If we already got the user's Info page from the mutual friend check
+			# then we use that response instead of requesting it again.
+			#
 			if (defined($info_response)) {
 				$response = $info_response;
 			}else{
 				$response = http_request($url.((index($url, '?') > -1) ? '&' : '?').'v=info');
 			}
-            $response =~ s/\r|\n//g;
-            $istart = index($response, '<div class="al aps">Friends');
-            LINE: for (my $i = 0; ; $i++) {
-                my ($field, $value, @values);
-                $istart = index($response, '<div class="mfsm"', $istart);
-                if ($istart < 0) {
-                    last;
-                }
-                $istart = index($response, '>', $istart)+1;
-                $iend = index($response, ':', $istart);
-                $field = lc(substr($response, $istart, $iend-$istart));
+			
+            $response =~ s/\r|\n//g; # strip newlines from the response for more reliable parsing
+			
+			#
+			# Parses all user information
+			#
+			# Example: <div class="mfsm">Profile:</div><div class="mfsm"><a href="/mark.zuckerberg">facebook.com/mark.zuckerberg</a></div>
+			# 
+			# $field = "profile";
+			# $value = "facebook.com/mark.zuckerberg";
+			#
+            while ($response =~ m/<div class="mfsm[^>]+>([^:]+):<\/div>((?!<div).)*<div class="mfsm[^>]+>(((?!<div).)*)<\/div>/g) {
+				my $field = $1;
+				my $value = $3;
+                $field = lc($1);
                 $field =~ s|<.+?>||g;
                 $field =~ s/[^a-z]/_/g;
                 $field =~ s|[_]{2,}|_|g;
+                my @values = $value =~ /<a[^>]+>([^<]+)<\/a>/g;
                 
-                $istart = index($response, '<div class="mfsm"', $istart);
-                $istart = index($response, '>', $istart)+1;
-                $iend = index($response, '</div', $istart);
-                $value = substr($response, $istart, $iend-$istart);
-                @values = $value =~ /<a[^>]+>([^<]+)<\/a>/g;
-                
-                if (@values < 2) {
-                    $values[0] = $value;
-                }
+                $values[0] = $value if (@values < 2);
                 for (my $i = 0; $i < @values; $i++) {
                     $values[$i] =~ s|<.+?>| |g;
                     $values[$i] =~ s|[\ ]{2,}| |g;
@@ -623,18 +702,30 @@ sub crawl_user() {
                     $current_user{$field} .= join("\n", @values)."\n";
                 }
             }
+			
+			#
+			# Append new info with old info if -info == append
+			#
 			if ($info_save_method eq 'append') {
 				%current_user = map {
 					$_ => ((defined($$row{$_}))?$$row{$_}.',':'').$current_user{$_}
 				} keys %current_user;
 			}
+			
+			# Split information with multiple entries by "\n"
             %current_user = map { $_ => join("\n", split(/\n/, $current_user{$_})) } keys %current_user;
             
+			#
+			# Send user information to plugins
+			#
 			foreach my $plugin (@plugin_functions) {
 				&$plugin(\%current_user);
 			}
 			
-            foreach my $attr (keys %current_user) {
+			#
+			# Create any new columns
+            #
+			foreach my $attr (keys %current_user) {
                 lock(@info_table_columns);
 				my $column_attr = 'TEXT CHARACTER SET utf8 COLLATE utf8_general_ci';
 				my $column = $attr;
@@ -651,18 +742,25 @@ sub crawl_user() {
 					$query->execute();
 				}
             }
+			
+			#
+			# INSERT or UPDATE user information depending on -info option
+			#
             if (join('', values %current_user) ne '') {
+				my $done_str = 'done';
 				if ($info_save_method eq 'insert' || $query->rows == 0) {
 					my $info_columns = join(', ', (map { "`$_`" } keys %current_user));
 					my $info_values = join(', ', map { '?' } keys %current_user);
 					$query = $dbh_thread->prepare("INSERT INTO `$mysql_database`.`$mysql_info_table` (`crawled_by`, `user_id`, `user_name`, `date`, $info_columns) VALUES (?, ?, ?, ?, $info_values)");
 					$query->execute($fb_user_email, $id, $name, strftime("%Y-%m-%d %H:%M:%S", localtime(time)), values %current_user);
+					$done_str = 'inserted';
 				}else{
 					my $info_columns = join(', ', (map { "`$_` = ?" } keys %current_user));
 					$query = $dbh_thread->prepare("UPDATE `$mysql_database`.`$mysql_info_table` SET `crawled_by`=?, `user_name`=?, `date`=?, $info_columns WHERE `user_id`='$id'");
 					$query->execute($fb_user_email, $name, strftime("%Y-%m-%d %H:%M:%S", localtime(time)), values %current_user);
+					$done_str = 'updated';
 				}
-				print ' - '.$name.(' ' x (27-length($name))).$id.(' ' x (20-length($id)))."info : done\n";
+				print ' - '.$name.(' ' x (27-length($name))).$id.(' ' x (20-length($id)))."info : $done_str\n";
             }
         }
     }
@@ -671,17 +769,24 @@ sub crawl_user() {
     threads->self()->detach();
 }
 
-if (defined($save_self)) {
-	get_user('profile.php?id='.$fb_user_id);
-}
+# crowl self if -self option is set
+get_user('profile.php?id='.$fb_user_id) if (defined($save_self));
 
 if (defined($fb_user_urls)) {
-    foreach my $uri (split(/,/,$fb_user_urls)) {
+	
+	#
+	# Crawl each -url
+    #
+	foreach my $uri (split(/,/,$fb_user_urls)) {
 		$uri = trim($uri);
 		$uri =~ s/http:\/\/.*//;
 		get_user($uri);
     }
 }elsif (defined($fb_user_names)) {
+	
+	#
+	# Crawl each -name
+	#
     my ($uri, $response, $istart, $iend);
     foreach my $name (split(/,/,$fb_user_names)) {
         $response = http_request('http://m.facebook.com/search/?search=people&query='.uri_escape(trim($name)));
@@ -695,9 +800,17 @@ if (defined($fb_user_urls)) {
         get_user($uri);
     }
 }else{
+	
+	#
+	# Get the current logged in user's friends and crawl them
+	#
     print "+ Entering depth level: 0 (your friends)\n";
     find_friends($fb_user_id, $fb_user_name);
 }
+
+#
+# Once done with current user, go on to next crawl depth
+#
 for (my $d = 1; $d <= $crawl_depth; $d++) {
 	print "+ Entering depth level: $d (friends".(' of friends' x $d).")\n";
 	foreach my $user (@users) {
@@ -706,6 +819,9 @@ for (my $d = 1; $d <= $crawl_depth; $d++) {
 }
 self_destruct();
 
+#
+# Wait for all threads to die
+#
 sub self_destruct {
 	$q->enqueue('die') for (1..$thread_count);
 	foreach my $thread (@threads) {
@@ -727,7 +843,15 @@ sub self_destruct {
 	print '+ '.scalar(@users)." profiles crawled in $time $unit\n";
 }
 
+######################################
+#
+# Anonymous data colloration (for use with fb-share.pl)
+#
+# If the -share option has been set then this will send the results to anonfiles.com 
+#
+######################################
 
+# Exclude any identifying information
 my @share_columns;
 my @exclude_columns = ('id', 'crawled_by');
 foreach my $column (@info_table_columns) {
@@ -736,6 +860,9 @@ foreach my $column (@info_table_columns) {
 	}
 }
 
+#
+# Anonymize and zip compress the results then send them to anonfiles.com
+#
 if (defined($share_results)) {
 	my $out = "crawl-start: ".localtime($start_time)."\n";
 	$out .= "crawl-end: ".localtime()."\n";
