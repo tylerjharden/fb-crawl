@@ -134,10 +134,9 @@ if (!defined($save_wall) and !defined($save_friends) and !defined($save_info)) {
     exit;
 }
 
-use Time::HiRes qw(usleep);
+# Load libraries
 use Fcntl;
 use HTML::Entities;
-use URI::Escape;
 use POSIX qw/strftime/;
 use LWP::UserAgent;
 if (defined($https)) {
@@ -270,7 +269,7 @@ my @threads;
 use threads;
 use Thread::Queue;
 my $q = Thread::Queue->new();
-push(@threads, threads->create(\&crawl_user)) for (1..($thread_count-1));
+push(@threads, threads->create(\&crawl_user)) for (2..$thread_count);
 
 
 #
@@ -484,7 +483,7 @@ sub find_friends {
     while ($q->pending()) {
         sleep 1;
     }
-    usleep(100000) for (0..$#threads);
+    sleep 1 for (0..$#threads);
 }
 
 
@@ -646,14 +645,17 @@ sub crawl_user {
 			# Get current user information out of the database
             $query = $dbh_thread->prepare("SELECT * FROM `$mysql_database`.`$mysql_info_table` WHERE `user_id`='$id'");
             $query->execute or die_report($@);
+			my $row = $query->fetchrow_hashref;
+			my $rows = 0;
+			$rows = 1 if ($row);
+			
 			
 			#
 			# If we've crawled the user before and we only want new users, skip current user
 			# If we've never crawled the user before and we only want old users, skip current user
 			#
-			next if (($query->rows > 0 and defined($new_only)) || ($query->rows == 0 and defined($old_only)));
+			next if (($rows > 0 and defined($new_only)) || ($rows == 0 and defined($old_only)));
 			
-			my $row = $query->fetchrow_hashref;
             my %current_user; # contains current user info
 			
 			#
@@ -671,27 +673,25 @@ sub crawl_user {
 			#
 			# Parses all user information
 			#
-			# Example: <div class="mfsm">Profile:</div><div class="mfsm"><a href="/mark.zuckerberg">facebook.com/mark.zuckerberg</a></div>
-			# 
-			# $field = "profile";
-			# $value = "facebook.com/mark.zuckerberg";
-			#
-            while ($response =~ m/<div class="mfsm[^>]+>([^:]+):<\/div>((?!<div).)*<div class="mfsm[^>]+>(((?!<div).)*)<\/div>/g) {
-				my $field = $1;
-				my $value = $3;
-                $field = lc($1);
+            while ($response =~ m/<td class="label"[^>]*>((?:(?!<\/td).)*)<\/td><td[^>]*>((?:(?!<\/td).)*)<\/td/g) {
+				my $field = lc($1);
+				my $value = $2;
                 $field =~ s|<.+?>||g;
                 $field =~ s/[^a-z]/_/g;
                 $field =~ s|[_]{2,}|_|g;
-                my @values = $value =~ /<a[^>]+>([^<]+)<\/a>/g;
+				chop($field);
+                my @values = $value =~ /<a[^>]+>((?:(?!<\/a).)*)<\/a>/g;
                 
                 $values[0] = $value if (@values < 2);
                 for (my $i = 0; $i < @values; $i++) {
-                    $values[$i] =~ s|<.+?>| |g;
+                    $values[$i] =~ s|<.+?>||g;
                     $values[$i] =~ s|[\ ]{2,}| |g;
                     $values[$i] = trim(decode_entities($values[$i]));
                 }
-                
+				
+                @values = grep {$_ ne ''} @values; # delete empty values
+				
+				# if -info == append or insert then only add new values
                 if ($info_save_method ne 'replace' && defined($$row{$field})) {
                     foreach my $value (@values) {
                         if (!grep {$_ eq $value} split(/\n/, $$row{$field})) {
@@ -699,9 +699,20 @@ sub crawl_user {
                         }
                     }
                 }else{
+					# else use all the values
                     $current_user{$field} .= join("\n", @values)."\n";
                 }
             }
+			
+			# Remove extra "\n" from end of values
+            map { chomp } values %current_user;
+            
+			#
+			# Send current user information to plugins
+			#
+			foreach my $plugin (@plugin_functions) {
+				&$plugin(\%current_user);
+			}
 			
 			#
 			# Append new info with old info if -info == append
@@ -710,16 +721,6 @@ sub crawl_user {
 				%current_user = map {
 					$_ => ((defined($$row{$_}))?$$row{$_}.',':'').$current_user{$_}
 				} keys %current_user;
-			}
-			
-			# Split information with multiple entries by "\n"
-            %current_user = map { $_ => join("\n", split(/\n/, $current_user{$_})) } keys %current_user;
-            
-			#
-			# Send user information to plugins
-			#
-			foreach my $plugin (@plugin_functions) {
-				&$plugin(\%current_user);
 			}
 			
 			#
@@ -748,7 +749,7 @@ sub crawl_user {
 			#
             if (join('', values %current_user) ne '') {
 				my $done_str = 'done';
-				if ($info_save_method eq 'insert' || $query->rows == 0) {
+				if ($info_save_method eq 'insert' || $rows == 0) {
 					my $info_columns = join(', ', (map { "`$_`" } keys %current_user));
 					my $info_values = join(', ', map { '?' } keys %current_user);
 					$query = $dbh_thread->prepare("INSERT INTO `$mysql_database`.`$mysql_info_table` (`crawled_by`, `user_id`, `user_name`, `date`, $info_columns) VALUES (?, ?, ?, ?, $info_values)");
@@ -787,6 +788,7 @@ if (defined($fb_user_urls)) {
 	#
 	# Crawl each -name
 	#
+	use URI::Escape;
     my ($uri, $response, $istart, $iend);
     foreach my $name (split(/,/,$fb_user_names)) {
         $response = http_request('http://m.facebook.com/search/?search=people&query='.uri_escape(trim($name)));
@@ -826,7 +828,7 @@ sub self_destruct {
 	$q->enqueue('die') for (1..$thread_count);
 	foreach my $thread (@threads) {
 		while ($thread->is_running()) {
-			usleep(50000);
+			sleep 1;
 		}
 	}
 	my $time = time()-$start_time;
@@ -845,7 +847,7 @@ sub self_destruct {
 
 ######################################
 #
-# Anonymous data colloration (for use with fb-share.pl)
+# Anonymous data collaboration (for use with fb-share.pl)
 #
 # If the -share option has been set then this will send the results to anonfiles.com 
 #
