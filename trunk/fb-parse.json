@@ -29,7 +29,7 @@
         "results" : "<a href=\"https?:\/\/www.facebook.com\/([^\"]+)\" data-hovercard=\"[^\?]+\?id=([0-9]+)\">([^<]+)<\/a>",
         "result_uri" : 1,
         "result_id" : 2,
-        "result_name ": 3,
+        "result_name": 3,
     },
     
     "profile" : {
