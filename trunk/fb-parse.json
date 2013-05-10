@@ -1,75 +1,88 @@
 {
-    "user_agent" : "Mozilla/5.0 (Windows NT 5.1, rv:14.0) Gecko/20120405 Firefox/14.0a1",
-    "headers" : {"Accept-Language" : "en,en-us,q=0.5"},
-    "proxy_test_url" : "http://ip.appspot.com/",
-    "error" : ["<div id=\"error\">(.*?)<\/div>", "(Log In)", "(Sorry, something went wrong.)", "<title>(Page Not Found)</title>", "<title>(Content Not Found)</title>"],
-    
-    "login" : {
-        "url" : "http://www.facebook.com/",
-        "error" : "login_error_box[^>]+>(.*?)<\/div>",
-        "form" : {
-            "method" : "POST",
-            "action" : "http://www.facebook.com/login.php?login_attempt=1",
-            "email" : "email",
-            "pass" : "pass",
+    "user_agent": "Mozilla/5.0 (Windows NT 5.1, rv:14.0) Gecko/20120405 Firefox/14.0a1",
+    "headers": {
+        "Accept-Language": "en,en-us,q=0.5"
+    },
+    "proxy_test_url": "http://ip.appspot.com/",
+    "error": [
+        "<div id=\"error\">(.*?)</div>",
+        "(Log In)",
+        "(Sorry, something went wrong.)",
+        "<title>(Page Not Found)</title>",
+        "<title>(Content Not Found)</title>"
+    ],
+    "login": {
+        "url": "http://www.facebook.com/",
+        "error": "login_error_box[^>]+>(.*?)</div>",
+        "form": {
+            "method": "POST",
+            "action": "http://www.facebook.com/login.php?login_attempt=1",
+            "email": "email",
+            "pass": "pass"
         }
     },
-    
-    "user" : {
-        "user_id" : "envFlush\(\{\"user\"\:\"([0-9]+)\"",
-        "user_name" : ["<span class=\"headerTinymanName", "<a class=\"fbxWelcomeBoxName"],
+    "user": {
+        "user_id": "envFlush\\(\\{\"user\":\"([0-9]+)\"",
+        "user_name": [
+            "<span class=\"headerTinymanName",
+            "<a class=\"fbxWelcomeBoxName"
+        ]
     },
-    
-    "friends" : {
-        "url" : "http://www.facebook.com/ajax/browser/list/allfriends/?uid=UID&infinitescroll=1&location=friends_tab_tl&start=OFFSET&__user=USER&__a=1",
-        "increment" : 24,
-        "limit" : 500,
-        "error": ["\"errorSummary\":\"([\"]+)\"", "(No results found.)"],
-        
-        "results" : "<a href=\"https?:\/\/www.facebook.com\/([^\"]+)\" data-hovercard=\"[^\?]+\?id=([0-9]+)\">([^<]+)<\/a>",
-        "result_uri" : 1,
-        "result_id" : 2,
-        "result_name": 3,
+    "friends": {
+        "url": "http://www.facebook.com/ajax/browser/list/allfriends/?uid=UID&infinitescroll=1&location=friends_tab_tl&start=OFFSET&__user=USER&__a=1",
+        "increment": 24,
+        "limit": 500,
+        "error": [
+            "\"errorSummary\":\"([\"]+)\"",
+            "(No results found.)"
+        ],
+        "results": "<a href=\"https?:\\/\\/www.facebook.com\\/([^\"]+)\" data-hovercard=\"[^\\?]+\\?id=([0-9]+)\">([^<]+)<\\/a>",
+        "result_uri": 1,
+        "result_id": 2,
+        "result_name": 3
     },
-    
-    "profile" : {
-        "url" : "http://m.facebook.com/URI",
-        "name" : "<title>([^<]+)</title",
-        "id" : ",id=([0-9]+)&",
-        
-        "info" : {
-            "uri" : "http://m.facebook.com/URI",
-            "params" : {"v" : "info"},
-            "mutual" : "Mutual Friends \(([0-9]+)\)",
-            "results" : "<div class=\"mfsm[^>]+>([^:]+):<\/div>((?!<div).)*<div class=\"mfsm[^>]+>(((?!<div).)*)<\/div>",
-            "result_field" : 1,
-            "result_values" : 3,
-            "result_value" : "<a[^>]+>([^<]+)<\/a>",
+    "profile": {
+        "url": "http://m.facebook.com/URI",
+        "name": "<title>([^<]+)</title",
+        "id": ",id=([0-9]+)&",
+        "info": {
+            "uri": "http://m.facebook.com/URI",
+            "params": {
+                "v": "info"
+            },
+            "mutual": "Mutual Friends \\(([0-9]+)\\)",
+            "results": "<div class=\"mfsm[^>]+>([^:]+):</div>((?!<div).)*<div class=\"mfsm[^>]+>(((?!<div).)*)</div>",
+            "result_field": 1,
+            "result_values": 3,
+            "result_value": "<a[^>]+>([^<]+)<\\/a>"
         },
-        
-        "wall" : {
-            "uri" : "wall.php",
-            "params" : {"id" : "UID"},
-            "results" : "<div[^>]*?  class=\"msg[^>]+>(.*?)<\/div><div[^>]*?  class=\"actions[^>]+>.*?<abbr>([^<]+)<\/abbr>(  (near|in|at) ([^<]+))?",
-            "results_start_index" : "",
-            "results_end_index" : "",
-            "result_start_index" : "",
-            "result_end_index" : "",
-            "result_post" : 1,
-            "result_date" : 2,
-            "result_location" : 5,
+        "wall": {
+            "uri": "wall.php",
+            "params": {
+                "id": "UID"
+            },
+            "results": "<div[^>]*?  class=\"msg[^>]+>(.*?)</div><div[^>]*?  class=\"actions[^>]+>.*?<abbr>([^<]+)</abbr>(  (near|in|at) ([^<]+))?",
+            "results_start_index": "",
+            "results_end_index": "",
+            "result_start_index": "",
+            "result_end_index": "",
+            "result_post": 1,
+            "result_date": 2,
+            "result_location": 5
         }
     },
-    
-    "search" : {
-        "url" : "http://m.facebook.com/search/",
-        "params" : {"search" : "people", "query" : "QUERY"},
-        "query" : "QUERY",
-        "results" : "href=\"([^\"]+)\"",
-        "results_start_index" : "",
-        "results_end_index" : "",
-        "result_start_index" : "<td class=\"name",
-        "result_end_index" : "",
-        "result_url" : 1,
+    "search": {
+        "url": "http://m.facebook.com/search/",
+        "params": {
+            "search": "people",
+            "query": "QUERY"
+        },
+        "query": "QUERY",
+        "results": "href=\"([^\"]+)\"",
+        "results_start_index": "",
+        "results_end_index": "",
+        "result_start_index": "<td class=\"name",
+        "result_end_index": "",
+        "result_url": 1
     }
 }
